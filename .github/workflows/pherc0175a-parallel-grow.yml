@@ -1,0 +1,106 @@
+# PHerc0175A parallel GrowPatch batch 1.
+# One job builds villa VC3D at a4979b9 (the 306B team's VC3D) once; 16 jobs grow the snapped seeds of
+# seeds/batch1_seeds.json in parallel with the 306B sqm_grow.py recipe
+# (step 20, min area 0.5 cm2, remote m7 normal grids, no bulk download). Generations capped at 70 to bound each job
+# (about 2 h). Outputs: one artifact per seed (tifxyz mesh + grow log).
+# Triggered by pushes that change this file, or manually.
+name: pherc0175a-parallel-grow
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/pherc0175a-parallel-grow.yml"]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  VILLA_SHA: a4979b99004934955784ea19b30da66cfe5f9ead
+  PRED: https://vesuvius-challenge-open-data.s3.us-east-1.amazonaws.com/PHerc0175A/representations/predictions/surfaces/20250521115057-surface-20260413222639-surface-m7-L0-th0.2
+  GENS: "70"
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Install villa build deps (volume-cartographer/build_from_src_debian.sh list)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential ca-certificates gfortran git libavahi-client-dev libblosc-dev \
+            libboost-program-options-dev libboost-system-dev libcgal-dev libceres-dev libcurl4-openssl-dev libgmp-dev libhwloc-dev \
+            liblapack-dev liblapacke-dev liblz4-dev libmpfr-dev libopenblas-dev libopencv-contrib-dev libopencv-dev libscotch-dev \
+            libscotchmetis-dev libsqlite3-dev libsuitesparse-dev libtiff-dev libzstd-dev ninja-build nlohmann-json3-dev pkg-config \
+            python3 qt6-base-dev zlib1g-dev cmake
+      - name: Fetch villa at the pinned commit (volume-cartographer only)
+        run: |
+          set -euxo pipefail
+          mkdir villa && cd villa && git init -q . && git remote add origin https://github.com/ScrollPrize/villa.git
+          git sparse-checkout init --cone && git sparse-checkout set volume-cartographer
+          git fetch --depth 1 origin $VILLA_SHA && git checkout -q FETCH_HEAD && test "$(git rev-parse HEAD)" = "$VILLA_SHA"
+      - name: Configure and build grow tool (villa's own flags)
+        run: |
+          set -euxo pipefail
+          cd villa/volume-cartographer
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_Fortran_COMPILER=gfortran -DBLA_VENDOR=OpenBLAS -DVC_BUILD_APPS=ON -DVC_BUILD_FLATBOI=OFF -DVC_BUILD_PYTHON=OFF -DVC_TESTING=OFF
+          ninja -C build -j4 bin/vc_grow_seg_from_seed
+          mkdir -p $GITHUB_WORKSPACE/vcbin && cp build/bin/vc_grow_seg_from_seed $GITHUB_WORKSPACE/vcbin/
+          sha256sum $GITHUB_WORKSPACE/vcbin/vc_grow_seg_from_seed | tee $GITHUB_WORKSPACE/vcbin/SHA256
+      - uses: actions/upload-artifact@v4
+        with: {name: vcbin, path: vcbin, retention-days: 7}
+
+  grow:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        include:
+          - {tag: r0i02, x: 4740, y: 5212, z: 6144}
+          - {tag: r0i07, x: 4996, y: 5212, z: 6144}
+          - {tag: r0i12, x: 5148, y: 5211, z: 6144}
+          - {tag: r0i17, x: 5268, y: 5212, z: 6144}
+          - {tag: r0i22, x: 5412, y: 5212, z: 6144}
+          - {tag: r0i27, x: 5629, y: 5210, z: 6144}
+          - {tag: r0i32, x: 5836, y: 5212, z: 6144}
+          - {tag: r0i37, x: 6044, y: 5212, z: 6144}
+          - {tag: r0i42, x: 6228, y: 5211, z: 6144}
+          - {tag: r0i47, x: 6388, y: 5211, z: 6144}
+          - {tag: r0i52, x: 6604, y: 5211, z: 6144}
+          - {tag: r0i57, x: 6875, y: 5212, z: 6144}
+          - {tag: r0i62, x: 6995, y: 5212, z: 6144}
+          - {tag: r0i67, x: 7164, y: 5212, z: 6144}
+          - {tag: r0i72, x: 7324, y: 5212, z: 6144}
+          - {tag: r0i77, x: 7499, y: 5212, z: 6144}
+    steps:
+      - name: Install runtime libraries (same package list as the build)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libavahi-client-dev libblosc-dev libboost-program-options-dev libboost-system-dev \
+            libcgal-dev libceres-dev libcurl4-openssl-dev libgmp-dev libhwloc-dev liblapack-dev liblapacke-dev liblz4-dev libmpfr-dev \
+            libopenblas-dev libopencv-contrib-dev libopencv-dev libscotch-dev libscotchmetis-dev libsqlite3-dev libsuitesparse-dev \
+            libtiff-dev libzstd-dev nlohmann-json3-dev qt6-base-dev zlib1g-dev
+      - uses: actions/download-artifact@v4
+        with: {name: vcbin, path: vcbin}
+      - name: Grow ${{ matrix.tag }} (306B sqm_grow.py recipe)
+        run: |
+          set -uxo pipefail
+          chmod +x vcbin/vc_grow_seg_from_seed; sha256sum -c <(sed "s#  .*#  vcbin/vc_grow_seg_from_seed#" vcbin/SHA256)
+          O=$RUNNER_TEMP/out/${{ matrix.tag }}; mkdir -p $O $RUNNER_TEMP/ngrid
+          echo "{\"url\": \"$PRED.normal-grids\"}" > $RUNNER_TEMP/ngrid/normal-grids-remote.json
+          cat > $O/params.json <<J
+          {"mode": "seed", "step_size": 20, "min_area_cm": 0.5, "generations": $GENS, "thread_limit": 4,
+           "normal_grid_path": "$RUNNER_TEMP/ngrid", "voxelsize": 8.64, "cache_size": 3000000000}
+          J
+          echo '{"tag": "${{ matrix.tag }}", "seed": [${{ matrix.x }}, ${{ matrix.y }}, ${{ matrix.z }}]}' > $O/seed.json
+          start=$(date -u +%FT%TZ)
+          VC3D_CONFIG_DIR=$O/vc3dcfg timeout 105m ./vcbin/vc_grow_seg_from_seed -v $PRED.zarr -t $O -p $O/params.json \
+            --seed ${{ matrix.x }} ${{ matrix.y }} ${{ matrix.z }} > $O/grow.log 2>&1
+          rc=$?
+          echo "{\"rc\": $rc, \"start\": \"$start\", \"end\": \"$(date -u +%FT%TZ)\", \"nproc\": $(nproc)}" > $O/RUN.json
+          grep area $O/grow.log | tail -1 || true; ls $O
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: "grow-${{ matrix.tag }}", path: "${{ runner.temp }}/out/${{ matrix.tag }}", retention-days: 14}
